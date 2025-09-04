@@ -65,7 +65,7 @@ function resetFactoring(newNumber) {
     startTime = Date.now();
     
     // Calculate total ranges needed (sqrt(target) / 1000000)
-    const sqrtTarget = BigInt(Math.floor(Math.sqrt(Number(targetNumber)))) + 1n;
+    const sqrtTarget = sqrtBigint(targetNumber) + 1n;
     totalRanges = sqrtTarget / 1000000n + 1n;
     
     // Notify all clients of new task
@@ -79,9 +79,25 @@ function resetFactoring(newNumber) {
     currentRange += 1000000n;
 }
 
+// BigInt square root implementation
+function sqrtBigint(n) {
+    if (n < 0n) throw 'Square root of negative number';
+    if (n < 2n) return n;
+    
+    function newtonIteration(n, x0) {
+        const x1 = ((n / x0) + x0) >> 1n;
+        if (x0 === x1 || x0 === (x1 - 1n)) {
+            return x0;
+        }
+        return newtonIteration(n, x1);
+    }
+    
+    return newtonIteration(n, 1n);
+}
+
 function getProgress() {
     if (totalRanges === 0n) return 0;
-    return Math.min(100, Number((completedRanges.size * 100n) / totalRanges));
+    return Math.min(100, Number((BigInt(completedRanges.size) * 100n) / totalRanges));
 }
 
 io.on('connection', (socket) => {
