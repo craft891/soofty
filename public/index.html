@@ -3,31 +3,126 @@
 <head>
     <title>Distributed Factoring</title>
     <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status-box { 
+            border: 1px solid #ccc; 
+            padding: 15px; 
+            margin: 10px 0; 
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .progress-bar {
+            width: 100%;
+            background-color: #e0e0e0;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 20px;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .task-info { 
+            background-color: #e3f2fd; 
+            padding: 10px; 
+            border-radius: 5px; 
+            margin: 10px 0;
+        }
+        .result { 
+            background-color: #c8e6c9; 
+            padding: 15px; 
+            border-radius: 5px; 
+            font-weight: bold;
+            text-align: center;
+            font-size: 1.2em;
+        }
+        .time-info { 
+            font-size: 0.9em; 
+            color: #666; 
+            margin-top: 5px;
+        }
+    </style>
 </head>
 <body>
-    <h1>Distributed Factoring Client</h1>
-    <div id="status">Connecting...</div>
-    <div id="task">No task assigned</div>
-    
+    <div class="container">
+        <h1>Distributed Factoring System</h1>
+        
+        <div class="status-box">
+            <h3>Connection Status</h3>
+            <div id="status">Connecting to server...</div>
+        </div>
+        
+        <div class="status-box">
+            <h3>Factoring Progress</h3>
+            <div id="progress-text">Initializing...</div>
+            <div class="progress-bar">
+                <div id="progress-bar" class="progress-fill"></div>
+            </div>
+            <div id="time-info" class="time-info"></div>
+        </div>
+        
+        <div class="status-box">
+            <h3>Current Task</h3>
+            <div id="task" class="task-info">No task assigned</div>
+        </div>
+        
+        <div id="result" class="result" style="display: none;"></div>
+    </div>
+
     <script>
         const socket = io();
-        const status = document.getElementById('status');
+        const statusDiv = document.getElementById('status');
         const taskDiv = document.getElementById('task');
+        const progressText = document.getElementById('progress-text');
+        const progressBar = document.getElementById('progress-bar');
+        const timeInfo = document.getElementById('time-info');
+        const resultDiv = document.getElementById('result');
+        
         let currentTask = null;
+        let startTime = Date.now();
 
         socket.on('connect', () => {
-            status.textContent = 'Connected to server';
+            statusDiv.textContent = 'Connected to server';
+            statusDiv.style.color = 'green';
             socket.emit('request_task');
+        });
+
+        socket.on('disconnect', () => {
+            statusDiv.textContent = 'Disconnected from server';
+            statusDiv.style.color = 'red';
         });
 
         socket.on('new_task', (task) => {
             currentTask = task;
-            taskDiv.textContent = `Factoring ${task.number} from ${task.start} to ${task.end}`;
-            processTask(task);
+            taskDiv.innerHTML = `
+                Factoring <strong>${task.number}</strong><br>
+                Searching range: <strong>${task.start.toLocaleString()}</strong> to <strong>${task.end.toLocaleString()}</strong>
+            `;
+            startTime = Date.now();
+        });
+
+        socket.on('progress_update', (data) => {
+            progressText.textContent = `${data.completed} of ${data.total} ranges completed (${data.progress}%)`;
+            progressBar.style.width = `${data.progress}%`;
+            
+            // Format elapsed time
+            const elapsed = data.elapsed / 1000;
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = Math.floor(elapsed % 60);
+            timeInfo.textContent = `Elapsed time: ${minutes}m ${seconds}s`;
         });
 
         socket.on('factored', (data) => {
-            status.textContent = `Factoring complete! Factor: ${data.factor}`;
+            resultDiv.innerHTML = `
+                <h3>Factoring Complete!</h3>
+                <p>${data.number} = <strong>${data.factor}</strong> × <strong>${data.number/data.factor}</strong></p>
+            `;
+            resultDiv.style.display = 'block';
+            taskDiv.textContent = 'Factoring completed';
         });
 
         function processTask(task) {
@@ -114,6 +209,11 @@
                 setTimeout(processChunk, 1);
             }
         }
+
+        // Listen for new tasks and process them
+        socket.on('new_task', (task) => {
+            processTask(task);
+        });
     </script>
 </body>
 </html>
