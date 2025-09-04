@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -22,12 +21,16 @@ let currentRange = 1;
 let completedRanges = new Set();
 let workers = new Map();
 let isFactored = false;
+let factorFound = null;
+let totalRanges = 0;
+let startTime = Date.now();
 
 // Read target number from file
 function loadTargetNumber() {
     try {
         targetNumber = parseInt(fs.readFileSync('target.txt', 'utf8').trim());
         console.log(`Target number set to: ${targetNumber}`);
+        resetFactoring(targetNumber);
     } catch (err) {
         console.error('Error reading target.txt:', err);
         process.exit(1);
@@ -39,7 +42,7 @@ setInterval(() => {
     const newNumber = parseInt(fs.readFileSync('target.txt', 'utf8').trim());
     if (newNumber !== targetNumber) {
         console.log(`Target changed to: ${newNumber}`);
-        resetFactoring(newNumber);
+        loadTargetNumber();
     }
 }, 5000);
 
@@ -48,27 +51,57 @@ function resetFactoring(newNumber) {
     currentRange = 1;
     completedRanges.clear();
     isFactored = false;
-    workers.forEach((_, socketId) => {
-        io.to(socketId).emit('new_task', {
-            number: targetNumber,
-            start: currentRange,
-            end: currentRange + 999999
-        });
-        currentRange += 1000000;
+    factorFound = null;
+    totalRanges = 0;
+    startTime = Date.now();
+    
+    // Calculate total ranges needed
+    const sqrtTarget = Math.floor(Math.sqrt(targetNumber));
+    totalRanges = Math.ceil(sqrtTarget / 1000000);
+    
+    // Notify all clients of new task
+    io.emit('new_task', {
+        number: targetNumber,
+        start: currentRange,
+        end: currentRange + 999999,
+        totalRanges: totalRanges
     });
+    
+    currentRange += 1000000;
+}
+
+function getProgress() {
+    if (totalRanges === 0) return 0;
+    return Math.min(100, Math.round((completedRanges.size / totalRanges) * 100));
 }
 
 io.on('connection', (socket) => {
     console.log(`Worker ${socket.id} connected`);
     workers.set(socket.id, { socket, range: null });
 
+    // Send current status to newly connected client
+    if (isFactored && factorFound) {
+        socket.emit('factored', { factor: factorFound });
+    } else {
+        socket.emit('progress_update', {
+            progress: getProgress(),
+            completed: completedRanges.size,
+            total: totalRanges,
+            elapsed: Date.now() - startTime
+        });
+    }
+
     socket.on('request_task', () => {
-        if (isFactored) return;
+        if (isFactored) {
+            socket.emit('factored', { factor: factorFound });
+            return;
+        }
         
         const task = {
             number: targetNumber,
             start: currentRange,
-            end: currentRange + 999999
+            end: currentRange + 999999,
+            totalRanges: totalRanges
         };
         
         workers.get(socket.id).range = task.start;
@@ -77,14 +110,33 @@ io.on('connection', (socket) => {
     });
 
     socket.on('factor_found', (data) => {
+        if (isFactored) return; // Prevent duplicate processing
+        
         console.log(`Factor found: ${data.factor}`);
         isFactored = true;
-        io.emit('factored', { factor: data.factor });
-        fs.appendFileSync('results.txt', `${targetNumber} = ${data.factor} × ${targetNumber/data.factor}\n`);
+        factorFound = data.factor;
+        
+        // Broadcast to all clients
+        io.emit('factored', { factor: data.factor, number: targetNumber });
+        
+        // Save result to file
+        const otherFactor = targetNumber / data.factor;
+        fs.appendFileSync('results.txt', `${targetNumber} = ${data.factor} × ${otherFactor}\n`);
     });
 
     socket.on('task_complete', (data) => {
         completedRanges.add(data.start);
+        
+        // Broadcast progress update to all clients
+        const progressData = {
+            progress: getProgress(),
+            completed: completedRanges.size,
+            total: totalRanges,
+            elapsed: Date.now() - startTime
+        };
+        
+        io.emit('progress_update', progressData);
+        
         if (!isFactored) {
             socket.emit('request_task');
         }
