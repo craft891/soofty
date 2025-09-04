@@ -57,11 +57,69 @@
             font-size: 1.1em; 
             word-break: break-all;
         }
+        .search-indicator {
+            font-family: 'Courier New', monospace;
+            background-color: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            min-height: 20px;
+            font-size: 0.9em;
+        }
+        .search-number {
+            display: inline-block;
+            margin: 0 2px;
+            padding: 2px 4px;
+            background-color: #3498db;
+            border-radius: 3px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .controls {
+            margin: 15px 0;
+            text-align: center;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 0 5px;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .worker-count {
+            display: inline-block;
+            margin: 0 10px;
+            font-weight: bold;
+        }
+        .search-progress {
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Distributed Factoring System</h1>
+        
+        <div class="controls">
+            <button id="add-worker">Add Local Worker</button>
+            <span class="worker-count">Local Workers: <span id="worker-count">0</span></span>
+            <button id="remove-worker" disabled>Remove Worker</button>
+        </div>
         
         <div class="status-box">
             <h3>Connection Status</h3>
@@ -80,6 +138,8 @@
         <div class="status-box">
             <h3>Current Task</h3>
             <div id="task" class="task-info">No task assigned</div>
+            <div id="search-indicator" class="search-indicator">Waiting for task...</div>
+            <div id="search-progress" class="search-progress"></div>
         </div>
         
         <div id="result" class="result" style="display: none;"></div>
@@ -93,9 +153,220 @@
         const progressBar = document.getElementById('progress-bar');
         const timeInfo = document.getElementById('time-info');
         const resultDiv = document.getElementById('result');
+        const searchIndicator = document.getElementById('search-indicator');
+        const searchProgress = document.getElementById('search-progress');
+        const addWorkerBtn = document.getElementById('add-worker');
+        const removeWorkerBtn = document.getElementById('remove-worker');
+        const workerCountSpan = document.getElementById('worker-count');
         
         let currentTask = null;
         let startTime = Date.now();
+        let localWorkers = [];
+        let workerTaskRanges = [];
+        let isFactored = false;
+
+        // Update worker count display
+        function updateWorkerCount() {
+            workerCountSpan.textContent = localWorkers.length;
+            removeWorkerBtn.disabled = localWorkers.length === 0;
+        }
+
+        // Add local worker
+        addWorkerBtn.addEventListener('click', () => {
+            if (isFactored) return;
+            
+            const workerScript = `
+                self.onmessage = function(e) {
+                    const { number, start, end, workerId } = e.data;
+                    let factor = null;
+                    
+                    // BigInt utilities
+                    function gcd(a, b) {
+                        while (b !== 0n) {
+                            [a, b] = [b, a % b];
+                        }
+                        return a;
+                    }
+
+                    function pollardRho(n) {
+                        if (n % 2n === 0n) return 2n;
+                        let x = 2n;
+                        let y = 2n;
+                        let d = 1n;
+                        
+                        function g(x) {
+                            return (x * x + 1n) % n;
+                        }
+                        
+                        while (d === 1n) {
+                            x = g(x);
+                            y = g(g(y));
+                            d = gcd(x > y ? x - y : y - x, n);
+                        }
+                        
+                        return d === n ? null : d;
+                    }
+
+                    function sqrtBigint(n) {
+                        if (n < 0n) return 0n;
+                        if (n < 2n) return n;
+                        
+                        function newtonIteration(n, x0) {
+                            const x1 = ((n / x0) + x0) >> 1n;
+                            if (x0 === x1 || x0 === (x1 - 1n)) {
+                                return x0;
+                            }
+                            return newtonIteration(n, x1);
+                        }
+                        
+                        return newtonIteration(n, 1n);
+                    }
+
+                    function trialDivision(n, start, end) {
+                        if (start < 2n) start = 2n;
+                        if (start === 2n) {
+                            if (n % 2n === 0n) return 2n;
+                            start = 3n;
+                        }
+                        
+                        const limit = sqrtBigint(n) + 1n;
+                        const endLimit = end > limit ? limit : end;
+                        
+                        for (let i = start; i <= endLimit; i += 2n) {
+                            if (n % i === 0n) return i;
+                        }
+                        return null;
+                    }
+
+                    // Main processing
+                    try {
+                        const n = BigInt(number);
+                        const startBig = BigInt(start);
+                        const endBig = BigInt(end);
+                        
+                        // Try Pollard's Rho first for very large numbers
+                        if (startBig === 1n) {
+                            const rhoFactor = pollardRho(n);
+                            if (rhoFactor && rhoFactor !== 1n && rhoFactor !== n) {
+                                self.postMessage({ factor: rhoFactor.toString(), workerId });
+                                return;
+                            }
+                        }
+                        
+                        // Trial division in chunks
+                        let current = startBig;
+                        if (current === 1n) current = 3n;
+                        else if (current % 2n === 0n) current = current + 1n;
+                        
+                        const chunkSize = 5000n;
+                        let lastUpdate = 0n;
+                        
+                        function processChunk() {
+                            if (factor) return;
+                            
+                            const chunkEnd = current + chunkSize < endBig ? current + chunkSize : endBig;
+                            
+                            for (let i = current; i <= chunkEnd; i += 2n) {
+                                // Send progress update every 1000 numbers
+                                if (i - lastUpdate > 1000n) {
+                                    self.postMessage({ 
+                                        progress: i.toString(),
+                                        checking: i.toString(),
+                                        workerId
+                                    });
+                                    lastUpdate = i;
+                                }
+                                
+                                if (n % i === 0n) {
+                                    factor = i;
+                                    self.postMessage({ factor: factor.toString(), workerId });
+                                    return;
+                                }
+                            }
+                            
+                            if (chunkEnd < endBig) {
+                                current = chunkEnd + 1n;
+                                if (current % 2n === 0n) current = current + 1n;
+                                setTimeout(processChunk, 0);
+                            } else {
+                                self.postMessage({ complete: true, start: start, workerId });
+                            }
+                        }
+                        
+                        processChunk();
+                    } catch (error) {
+                        self.postMessage({ error: error.message, workerId });
+                    }
+                };
+            `;
+            
+            const worker = new Worker(URL.createObjectURL(new Blob([workerScript], { type: 'application/javascript' })));
+            
+            worker.onmessage = function(e) {
+                if (isFactored) return;
+                
+                const data = e.data;
+                if (data.factor) {
+                    socket.emit('factor_found', { factor: data.factor });
+                } else if (data.complete) {
+                    socket.emit('task_complete', { start: data.start });
+                } else if (data.checking) {
+                    // Update search indicator
+                    searchIndicator.innerHTML = `Worker ${data.workerId}: Checking ${data.checking}`;
+                } else if (data.error) {
+                    console.error('Worker error:', data.error);
+                }
+            };
+            
+            localWorkers.push({
+                worker: worker,
+                id: localWorkers.length
+            });
+            
+            updateWorkerCount();
+            
+            // If we have a task, distribute it to the new worker
+            if (currentTask) {
+                distributeTaskToWorkers();
+            }
+        });
+
+        // Remove local worker
+        removeWorkerBtn.addEventListener('click', () => {
+            if (localWorkers.length > 0) {
+                const workerObj = localWorkers.pop();
+                workerObj.worker.terminate();
+                updateWorkerCount();
+            }
+        });
+
+        // Distribute current task to all workers
+        function distributeTaskToWorkers() {
+            if (!currentTask || localWorkers.length === 0) return;
+            
+            const start = BigInt(currentTask.start);
+            const end = BigInt(currentTask.end);
+            const rangeSize = (end - start) / BigInt(localWorkers.length);
+            
+            localWorkers.forEach((workerObj, index) => {
+                const workerStart = start + (rangeSize * BigInt(index));
+                let workerEnd = index === localWorkers.length - 1 ? end : workerStart + rangeSize;
+                
+                // Ensure proper range boundaries
+                if (index === 0 && workerStart === 1n) {
+                    workerStart = 1n;
+                } else if (workerStart % 2n === 0n) {
+                    workerStart = workerStart + 1n;
+                }
+                
+                workerObj.worker.postMessage({
+                    number: currentTask.number,
+                    start: workerStart.toString(),
+                    end: workerEnd.toString(),
+                    workerId: workerObj.id
+                });
+            });
+        }
 
         socket.on('connect', () => {
             statusDiv.textContent = 'Connected to server';
@@ -109,15 +380,23 @@
         });
 
         socket.on('new_task', (task) => {
+            isFactored = false;
             currentTask = task;
             taskDiv.innerHTML = `
                 Factoring <span class="number-display">${task.number}</span><br>
                 Searching range: <strong>${BigInt(task.start).toLocaleString()}</strong> to <strong>${BigInt(task.end).toLocaleString()}</strong>
             `;
+            searchIndicator.textContent = 'Starting search...';
+            searchProgress.textContent = '';
             startTime = Date.now();
+            
+            // Distribute task to local workers
+            distributeTaskToWorkers();
         });
 
         socket.on('progress_update', (data) => {
+            if (isFactored) return;
+            
             progressText.textContent = `${data.completed} of ${data.total} ranges completed (${data.progress.toFixed(2)}%)`;
             progressBar.style.width = `${data.progress}%`;
             
@@ -129,124 +408,31 @@
         });
 
         socket.on('factored', (data) => {
-            const otherFactor = (BigInt(data.number) / BigInt(data.factor)).toString();
-            resultDiv.innerHTML = `
-                <h3>Factoring Complete!</h3>
-                <p class="number-display">${data.number}</p>
-                <p>= <span class="number-display">${data.factor}</span> × <span class="number-display">${otherFactor}</span></p>
-            `;
-            resultDiv.style.display = 'block';
-            taskDiv.textContent = 'Factoring completed';
+            isFactored = true;
+            try {
+                const otherFactor = (BigInt(data.number) / BigInt(data.factor)).toString();
+                resultDiv.innerHTML = `
+                    <h3>Factoring Complete!</h3>
+                    <p class="number-display">${data.number}</p>
+                    <p>= <span class="number-display">${data.factor}</span> × <span class="number-display">${otherFactor}</span></p>
+                `;
+                resultDiv.style.display = 'block';
+                taskDiv.textContent = 'Factoring completed';
+                searchIndicator.textContent = 'Factoring completed';
+                
+                // Terminate all workers
+                localWorkers.forEach(workerObj => {
+                    workerObj.worker.terminate();
+                });
+                localWorkers = [];
+                updateWorkerCount();
+            } catch (error) {
+                console.error('Error processing result:', error);
+            }
         });
 
-        function processTask(task) {
-            const number = BigInt(task.number);
-            const start = BigInt(task.start);
-            const end = BigInt(task.end);
-            let factor = null;
-            
-            // Pollard's Rho algorithm implementation
-            function gcd(a, b) {
-                while (b !== 0n) {
-                    [a, b] = [b, a % b];
-                }
-                return a;
-            }
-
-            function pollardRho(n) {
-                if (n % 2n === 0n) return 2n;
-                let x = 2n;
-                let y = 2n;
-                let d = 1n;
-                
-                function g(x) {
-                    return (x * x + 1n) % n;
-                }
-                
-                while (d === 1n) {
-                    x = g(x);
-                    y = g(g(y));
-                    d = gcd(x > y ? x - y : y - x, n);
-                }
-                
-                return d === n ? null : d;
-            }
-
-            // Trial division for small factors
-            function trialDivision(n, start, end) {
-                const limit = sqrtBigint(n) + 1n;
-                const endLimit = end > limit ? limit : end;
-                
-                for (let i = start; i <= endLimit; i += 2n) {
-                    if (n % i === 0n) return i;
-                }
-                return null;
-            }
-
-            // BigInt square root implementation
-            function sqrtBigint(n) {
-                if (n < 0n) throw 'Square root of negative number';
-                if (n < 2n) return n;
-                
-                function newtonIteration(n, x0) {
-                    const x1 = ((n / x0) + x0) >> 1n;
-                    if (x0 === x1 || x0 === (x1 - 1n)) {
-                        return x0;
-                    }
-                    return newtonIteration(n, x1);
-                }
-                
-                return newtonIteration(n, 1n);
-            }
-
-            // Process in chunks to avoid blocking
-            function processChunk() {
-                if (factor) return;
-                
-                const chunkSize = 10000n;
-                const chunkEnd = start + chunkSize < end ? start + chunkSize : end;
-                
-                // Try Pollard's Rho first (for very large numbers)
-                if (start === 1n) {
-                    const rhoFactor = pollardRho(number);
-                    if (rhoFactor && rhoFactor !== 1n && rhoFactor !== number) {
-                        factor = rhoFactor.toString();
-                        socket.emit('factor_found', { factor: factor });
-                        return;
-                    }
-                }
-                
-                // Trial division for range
-                const trialFactor = trialDivision(number, start, chunkEnd);
-                if (trialFactor) {
-                    factor = trialFactor.toString();
-                    socket.emit('factor_found', { factor: factor });
-                    return;
-                }
-                
-                if (chunkEnd < end) {
-                    setTimeout(processChunk, 1);
-                } else {
-                    socket.emit('task_complete', { start: start.toString() });
-                }
-            }
-
-            // Handle small numbers differently
-            if (start === 1n) {
-                if (number % 2n === 0n) {
-                    socket.emit('factor_found', { factor: '2' });
-                    return;
-                }
-                setTimeout(processChunk, 1);
-            } else {
-                setTimeout(processChunk, 1);
-            }
-        }
-
-        // Listen for new tasks and process them
-        socket.on('new_task', (task) => {
-            processTask(task);
-        });
+        // Request initial task
+        socket.emit('request_task');
     </script>
 </body>
 </html>
