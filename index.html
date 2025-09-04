@@ -1,0 +1,120 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Distributed Factoring</title>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <h1>Distributed Factoring Client</h1>
+    <div id="status">Connecting...</div>
+    <div id="task">No task assigned</div>
+    
+    <script>
+        const socket = io();
+        const status = document.getElementById('status');
+        const taskDiv = document.getElementById('task');
+        let currentTask = null;
+
+        socket.on('connect', () => {
+            status.textContent = 'Connected to server';
+            socket.emit('request_task');
+        });
+
+        socket.on('new_task', (task) => {
+            currentTask = task;
+            taskDiv.textContent = `Factoring ${task.number} from ${task.start} to ${task.end}`;
+            processTask(task);
+        });
+
+        socket.on('factored', (data) => {
+            status.textContent = `Factoring complete! Factor: ${data.factor}`;
+        });
+
+        function processTask(task) {
+            const { number, start, end } = task;
+            let factor = null;
+            
+            // Pollard's Rho algorithm implementation
+            function gcd(a, b) {
+                while (b !== 0n) {
+                    [a, b] = [b, a % b];
+                }
+                return a;
+            }
+
+            function pollardRho(n) {
+                if (n % 2n === 0n) return 2n;
+                let x = 2n;
+                let y = 2n;
+                let d = 1n;
+                
+                function g(x) {
+                    return (x * x + 1n) % n;
+                }
+                
+                while (d === 1n) {
+                    x = g(x);
+                    y = g(g(y));
+                    d = gcd(x > y ? x - y : y - x, n);
+                }
+                
+                return d === n ? null : d;
+            }
+
+            // Trial division for small factors
+            function trialDivision(n, start, end) {
+                const limit = BigInt(Math.floor(Math.sqrt(Number(n))) + 1);
+                const endLimit = end > limit ? limit : BigInt(end);
+                
+                for (let i = BigInt(start); i <= endLimit; i += 2n) {
+                    if (n % i === 0n) return i;
+                }
+                return null;
+            }
+
+            // Process in chunks to avoid blocking
+            function processChunk() {
+                if (factor) return;
+                
+                const n = BigInt(number);
+                const chunkSize = 10000;
+                const chunkEnd = Math.min(start + chunkSize, end);
+                
+                // Try Pollard's Rho first
+                const rhoFactor = pollardRho(n);
+                if (rhoFactor && rhoFactor !== 1n && rhoFactor !== n) {
+                    factor = rhoFactor;
+                    socket.emit('factor_found', { factor: Number(factor) });
+                    return;
+                }
+                
+                // Trial division for range
+                const trialFactor = trialDivision(n, start, chunkEnd);
+                if (trialFactor) {
+                    factor = trialFactor;
+                    socket.emit('factor_found', { factor: Number(factor) });
+                    return;
+                }
+                
+                if (chunkEnd < end) {
+                    setTimeout(processChunk, 1);
+                } else {
+                    socket.emit('task_complete', { start });
+                }
+            }
+
+            // Handle small numbers differently
+            if (start === 1) {
+                if (number % 2 === 0) {
+                    socket.emit('factor_found', { factor: 2 });
+                    return;
+                }
+                setTimeout(processChunk, 1);
+            } else {
+                setTimeout(processChunk, 1);
+            }
+        }
+    </script>
+</body>
+</html>
