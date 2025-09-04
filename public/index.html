@@ -1,17 +1,18 @@
+<!-- public/index.html -->
 <!DOCTYPE html>
 <html>
 <head>
     <title>Distributed Factoring</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .status-box { 
-            border: 1px solid #ccc; 
+            border: 1px solid #ddd; 
             padding: 15px; 
-            margin: 10px 0; 
+            margin: 15px 0; 
             border-radius: 5px;
-            background-color: #f9f9f9;
+            background-color: #fafafa;
         }
         .progress-bar {
             width: 100%;
@@ -19,31 +20,42 @@
             border-radius: 5px;
             overflow: hidden;
             margin: 10px 0;
+            height: 20px;
         }
         .progress-fill {
-            height: 20px;
+            height: 100%;
             background-color: #4CAF50;
             width: 0%;
             transition: width 0.3s;
         }
         .task-info { 
             background-color: #e3f2fd; 
-            padding: 10px; 
+            padding: 15px; 
             border-radius: 5px; 
             margin: 10px 0;
+            font-family: 'Courier New', monospace;
         }
         .result { 
             background-color: #c8e6c9; 
-            padding: 15px; 
+            padding: 20px; 
             border-radius: 5px; 
             font-weight: bold;
             text-align: center;
-            font-size: 1.2em;
+            font-size: 1.3em;
+            margin: 20px 0;
+            border: 2px solid #4CAF50;
         }
         .time-info { 
             font-size: 0.9em; 
             color: #666; 
             margin-top: 5px;
+        }
+        h1 { color: #333; text-align: center; }
+        h3 { margin-top: 0; color: #555; }
+        .number-display { 
+            font-family: 'Courier New', monospace; 
+            font-size: 1.1em; 
+            word-break: break-all;
         }
     </style>
 </head>
@@ -99,14 +111,14 @@
         socket.on('new_task', (task) => {
             currentTask = task;
             taskDiv.innerHTML = `
-                Factoring <strong>${task.number}</strong><br>
-                Searching range: <strong>${task.start.toLocaleString()}</strong> to <strong>${task.end.toLocaleString()}</strong>
+                Factoring <span class="number-display">${task.number}</span><br>
+                Searching range: <strong>${Number(task.start).toLocaleString()}</strong> to <strong>${Number(task.end).toLocaleString()}</strong>
             `;
             startTime = Date.now();
         });
 
         socket.on('progress_update', (data) => {
-            progressText.textContent = `${data.completed} of ${data.total} ranges completed (${data.progress}%)`;
+            progressText.textContent = `${data.completed} of ${data.total} ranges completed (${data.progress.toFixed(2)}%)`;
             progressBar.style.width = `${data.progress}%`;
             
             // Format elapsed time
@@ -117,16 +129,20 @@
         });
 
         socket.on('factored', (data) => {
+            const otherFactor = (BigInt(data.number) / BigInt(data.factor)).toString();
             resultDiv.innerHTML = `
                 <h3>Factoring Complete!</h3>
-                <p>${data.number} = <strong>${data.factor}</strong> × <strong>${data.number/data.factor}</strong></p>
+                <p class="number-display">${data.number}</p>
+                <p>= <span class="number-display">${data.factor}</span> × <span class="number-display">${otherFactor}</span></p>
             `;
             resultDiv.style.display = 'block';
             taskDiv.textContent = 'Factoring completed';
         });
 
         function processTask(task) {
-            const { number, start, end } = task;
+            const number = BigInt(task.number);
+            const start = BigInt(task.start);
+            const end = BigInt(task.end);
             let factor = null;
             
             // Pollard's Rho algorithm implementation
@@ -158,50 +174,67 @@
 
             // Trial division for small factors
             function trialDivision(n, start, end) {
-                const limit = BigInt(Math.floor(Math.sqrt(Number(n))) + 1);
-                const endLimit = end > limit ? limit : BigInt(end);
+                const limit = sqrtBigint(n) + 1n;
+                const endLimit = end > limit ? limit : end;
                 
-                for (let i = BigInt(start); i <= endLimit; i += 2n) {
+                for (let i = start; i <= endLimit; i += 2n) {
                     if (n % i === 0n) return i;
                 }
                 return null;
+            }
+
+            // BigInt square root implementation
+            function sqrtBigint(n) {
+                if (n < 0n) throw 'Square root of negative number';
+                if (n < 2n) return n;
+                
+                function newtonIteration(n, x0) {
+                    const x1 = ((n / x0) + x0) >> 1n;
+                    if (x0 === x1 || x0 === (x1 - 1n)) {
+                        return x0;
+                    }
+                    return newtonIteration(n, x1);
+                }
+                
+                return newtonIteration(n, 1n);
             }
 
             // Process in chunks to avoid blocking
             function processChunk() {
                 if (factor) return;
                 
-                const n = BigInt(number);
-                const chunkSize = 10000;
-                const chunkEnd = Math.min(start + chunkSize, end);
+                const chunkSize = 10000n;
+                const chunkEnd = start + chunkSize < end ? start + chunkSize : end;
                 
-                // Try Pollard's Rho first
-                const rhoFactor = pollardRho(n);
-                if (rhoFactor && rhoFactor !== 1n && rhoFactor !== n) {
-                    factor = rhoFactor;
-                    socket.emit('factor_found', { factor: Number(factor) });
-                    return;
+                // Try Pollard's Rho first (for very large numbers)
+                if (start === 1n) {
+                    const rhoFactor = pollardRho(number);
+                    if (rhoFactor && rhoFactor !== 1n && rhoFactor !== number) {
+                        factor = rhoFactor.toString();
+                        socket.emit('factor_found', { factor: factor });
+                        return;
+                    }
                 }
                 
                 // Trial division for range
-                const trialFactor = trialDivision(n, start, chunkEnd);
+                const trialFactor = trialDivision(number, start, chunkEnd);
                 if (trialFactor) {
-                    factor = trialFactor;
-                    socket.emit('factor_found', { factor: Number(factor) });
+                    factor = trialFactor.toString();
+                    socket.emit('factor_found', { factor: factor });
                     return;
                 }
                 
                 if (chunkEnd < end) {
                     setTimeout(processChunk, 1);
                 } else {
-                    socket.emit('task_complete', { start });
+                    socket.emit('task_complete', { start: start.toString() });
                 }
             }
 
             // Handle small numbers differently
-            if (start === 1) {
-                if (number % 2 === 0) {
-                    socket.emit('factor_found', { factor: 2 });
+            if (start === 1n) {
+                if (number % 2n === 0n) {
+                    socket.emit('factor_found', { factor: '2' });
                     return;
                 }
                 setTimeout(processChunk, 1);
