@@ -1,14 +1,21 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// Serve static files
-app.use(express.static('public'));
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve index.html at root route
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 let targetNumber = 0;
 let currentRange = 1;
