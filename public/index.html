@@ -112,7 +112,7 @@
             currentTask = task;
             taskDiv.innerHTML = `
                 Factoring <span class="number-display">${task.number}</span><br>
-                Searching range: <strong>${Number(task.start).toLocaleString()}</strong> to <strong>${Number(task.end).toLocaleString()}</strong>
+                Searching range: <strong>${BigInt(task.start).toLocaleString()}</strong> to <strong>${BigInt(task.end).toLocaleString()}</strong>
             `;
             startTime = Date.now();
         });
