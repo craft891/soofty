@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -16,20 +17,23 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-let targetNumber = 0;
-let currentRange = 1;
+let targetNumber = 0n; // BigInt
+let currentRange = 1n; // BigInt
 let completedRanges = new Set();
 let workers = new Map();
 let isFactored = false;
 let factorFound = null;
-let totalRanges = 0;
+let totalRanges = 0n; // BigInt
 let startTime = Date.now();
 
-// Read target number from file
+// Read target number from file (as string to preserve precision)
 function loadTargetNumber() {
     try {
-        targetNumber = parseInt(fs.readFileSync('target.txt', 'utf8').trim());
-        console.log(`Target number set to: ${targetNumber}`);
+        const numberString = fs.readFileSync('target.txt', 'utf8').trim();
+        // Remove quotes if present
+        const cleanNumber = numberString.replace(/["']/g, '');
+        targetNumber = BigInt(cleanNumber);
+        console.log(`Target number set to: ${targetNumber.toString()}`);
         resetFactoring(targetNumber);
     } catch (err) {
         console.error('Error reading target.txt:', err);
@@ -39,40 +43,45 @@ function loadTargetNumber() {
 
 // Poll for number changes
 setInterval(() => {
-    const newNumber = parseInt(fs.readFileSync('target.txt', 'utf8').trim());
-    if (newNumber !== targetNumber) {
-        console.log(`Target changed to: ${newNumber}`);
-        loadTargetNumber();
+    try {
+        const numberString = fs.readFileSync('target.txt', 'utf8').trim();
+        const cleanNumber = numberString.replace(/["']/g, '');
+        const newNumber = BigInt(cleanNumber);
+        if (newNumber !== targetNumber) {
+            console.log(`Target changed to: ${newNumber.toString()}`);
+            loadTargetNumber();
+        }
+    } catch (err) {
+        console.error('Error reading target.txt:', err);
     }
 }, 5000);
 
 function resetFactoring(newNumber) {
     targetNumber = newNumber;
-    currentRange = 1;
+    currentRange = 1n;
     completedRanges.clear();
     isFactored = false;
     factorFound = null;
-    totalRanges = 0;
     startTime = Date.now();
     
-    // Calculate total ranges needed
-    const sqrtTarget = Math.floor(Math.sqrt(targetNumber));
-    totalRanges = Math.ceil(sqrtTarget / 1000000);
+    // Calculate total ranges needed (sqrt(target) / 1000000)
+    const sqrtTarget = BigInt(Math.floor(Math.sqrt(Number(targetNumber)))) + 1n;
+    totalRanges = sqrtTarget / 1000000n + 1n;
     
     // Notify all clients of new task
     io.emit('new_task', {
-        number: targetNumber,
-        start: currentRange,
-        end: currentRange + 999999,
-        totalRanges: totalRanges
+        number: targetNumber.toString(), // Send as string
+        start: currentRange.toString(),
+        end: (currentRange + 999999n).toString(),
+        totalRanges: totalRanges.toString()
     });
     
-    currentRange += 1000000;
+    currentRange += 1000000n;
 }
 
 function getProgress() {
-    if (totalRanges === 0) return 0;
-    return Math.min(100, Math.round((completedRanges.size / totalRanges) * 100));
+    if (totalRanges === 0n) return 0;
+    return Math.min(100, Number((completedRanges.size * 100n) / totalRanges));
 }
 
 io.on('connection', (socket) => {
@@ -81,32 +90,38 @@ io.on('connection', (socket) => {
 
     // Send current status to newly connected client
     if (isFactored && factorFound) {
-        socket.emit('factored', { factor: factorFound });
+        socket.emit('factored', { 
+            factor: factorFound, 
+            number: targetNumber.toString() 
+        });
     } else {
         socket.emit('progress_update', {
             progress: getProgress(),
             completed: completedRanges.size,
-            total: totalRanges,
+            total: Number(totalRanges),
             elapsed: Date.now() - startTime
         });
     }
 
     socket.on('request_task', () => {
         if (isFactored) {
-            socket.emit('factored', { factor: factorFound });
+            socket.emit('factored', { 
+                factor: factorFound, 
+                number: targetNumber.toString() 
+            });
             return;
         }
         
         const task = {
-            number: targetNumber,
-            start: currentRange,
-            end: currentRange + 999999,
-            totalRanges: totalRanges
+            number: targetNumber.toString(), // Send as string
+            start: currentRange.toString(),
+            end: (currentRange + 999999n).toString(),
+            totalRanges: totalRanges.toString()
         };
         
-        workers.get(socket.id).range = task.start;
+        workers.get(socket.id).range = currentRange;
         socket.emit('new_task', task);
-        currentRange += 1000000;
+        currentRange += 1000000n;
     });
 
     socket.on('factor_found', (data) => {
@@ -117,11 +132,16 @@ io.on('connection', (socket) => {
         factorFound = data.factor;
         
         // Broadcast to all clients
-        io.emit('factored', { factor: data.factor, number: targetNumber });
+        io.emit('factored', { 
+            factor: data.factor, 
+            number: targetNumber.toString() 
+        });
         
         // Save result to file
-        const otherFactor = targetNumber / data.factor;
-        fs.appendFileSync('results.txt', `${targetNumber} = ${data.factor} × ${otherFactor}\n`);
+        const targetStr = targetNumber.toString();
+        const factorStr = data.factor;
+        const otherFactor = (targetNumber / BigInt(data.factor)).toString();
+        fs.appendFileSync('results.txt', `${targetStr} = ${factorStr} × ${otherFactor}\n`);
     });
 
     socket.on('task_complete', (data) => {
@@ -131,7 +151,7 @@ io.on('connection', (socket) => {
         const progressData = {
             progress: getProgress(),
             completed: completedRanges.size,
-            total: totalRanges,
+            total: Number(totalRanges),
             elapsed: Date.now() - startTime
         };
         
@@ -147,7 +167,7 @@ io.on('connection', (socket) => {
         const worker = workers.get(socket.id);
         if (worker && worker.range) {
             // Re-queue incomplete range
-            currentRange = Math.min(currentRange, worker.range);
+            currentRange = worker.range < currentRange ? worker.range : currentRange;
         }
         workers.delete(socket.id);
     });
